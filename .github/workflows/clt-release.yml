@@ -70,6 +70,9 @@ jobs:
           cp -R Script/clt ../release/Script/clt
           (cd ../release && ./Script/clt/apply.sh)
 
+      # The swiftbuild engine is the one that needs xcstringstool (the native
+      # engine copies a catalog uncompiled), so it is named explicitly: on a
+      # toolchain before Swift 6.4 the default is still native.
       - name: Build with the Command Line Tools alone
         if: steps.choose.outputs.tag != ''
         run: |
@@ -77,15 +80,20 @@ jobs:
           sudo xcode-select -s /Library/Developer/CommandLineTools
           if xcrun --find xcstringstool >/dev/null 2>&1; then echo "xcstringstool is reachable; this run proves nothing" >&2; exit 1; fi
           cd ../release
-          swift build
+          swift --version
+          swift build --build-system swiftbuild
 
+      # Upstream's tests import XCTest, which only Xcode ships. The native
+      # engine lowercases .lproj directory names (pt-br, zh-hans), which the
+      # case-sensitive lookup in the test misses, so the engine consumers get
+      # from Swift 6.4 on is named here too.
       - name: Prove the tables are read (tests need Xcode's XCTest)
         if: steps.choose.outputs.tag != ''
         run: |
           set -eu
           sudo xcode-select -s /Applications/Xcode.app
           cd ../release
-          swift test --filter TerminalLocalizationTests
+          swift test --build-system swiftbuild --filter TerminalLocalizationTests
 
       - name: Tag and push
         if: steps.choose.outputs.tag != ''
