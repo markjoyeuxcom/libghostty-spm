@@ -1,0 +1,102 @@
+name: CLT release
+
+# Republishes each upstream package tag as <tag>-clt: the same sources with
+# the string catalog compiled into .lproj tables by Script/clt, so the
+# package builds with the Command Line Tools alone (upstream needs Xcode's
+# xcstringstool since 2.2.2026100701; Lakr233/libghostty-spm#81). The
+# XCFramework stays upstream's release asset; nothing is built with Zig here.
+# Runs daily and on demand; does nothing when every upstream tag has its
+# -clt twin.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream package tag to republish (empty = the newest one without a -clt tag)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clt-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the tooling branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Choose the upstream tag
+        id: choose
+        env:
+          REQUESTED: ${{ inputs.tag }}
+        run: |
+          set -eu
+          git remote add upstream https://github.com/Lakr233/libghostty-spm.git
+          git fetch --quiet --tags upstream
+          git fetch --quiet --tags origin
+          if [ -n "$REQUESTED" ]; then
+            tag="$REQUESTED"
+            git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null || { echo "no upstream tag $tag" >&2; exit 1; }
+          else
+            tag=$(git tag --list | python3 -c '
+          import re, sys
+          tags = [t.strip() for t in sys.stdin]
+          plain = [t for t in tags if re.fullmatch(r"\d+\.\d+\.\d+", t)]
+          done = {t[:-4] for t in tags if t.endswith("-clt")}
+          todo = sorted((t for t in plain if t not in done), key=lambda t: tuple(int(p) for p in t.split(".")))
+          print(todo[-1] if todo else "", end="")')
+          fi
+          if [ -z "$tag" ]; then echo "every upstream tag already has its -clt twin"; fi
+          if git rev-parse -q --verify "refs/tags/$tag-clt" >/dev/null 2>&1; then echo "$tag-clt already exists" >&2; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Apply the patch to the upstream tag
+        if: steps.choose.outputs.tag != ''
+        env:
+          TAG: ${{ steps.choose.outputs.tag }}
+        run: |
+          set -eu
+          git worktree add --detach ../release "refs/tags/$TAG"
+          mkdir -p ../release/Script
+          cp -R Script/clt ../release/Script/clt
+          (cd ../release && ./Script/clt/apply.sh)
+
+      - name: Build with the Command Line Tools alone
+        if: steps.choose.outputs.tag != ''
+        run: |
+          set -eu
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          if xcrun --find xcstringstool >/dev/null 2>&1; then echo "xcstringstool is reachable; this run proves nothing" >&2; exit 1; fi
+          cd ../release
+          swift build
+
+      - name: Prove the tables are read (tests need Xcode's XCTest)
+        if: steps.choose.outputs.tag != ''
+        run: |
+          set -eu
+          sudo xcode-select -s /Applications/Xcode.app
+          cd ../release
+          swift test --filter TerminalLocalizationTests
+
+      - name: Tag and push
+        if: steps.choose.outputs.tag != ''
+        env:
+          TAG: ${{ steps.choose.outputs.tag }}
+        run: |
+          set -eu
+          cd ../release
+          git add -A
+          git -c user.name="clt-release" -c user.email="clt-release@users.noreply.github.com" \
+            commit -q -m "clt: $TAG with the string catalog compiled into .lproj tables"
+          git tag -a "$TAG-clt" -m "libghostty-spm $TAG, buildable with the Command Line Tools"
+          git push origin "refs/tags/$TAG-clt"
+          echo "published $TAG-clt at $(git rev-parse --short HEAD)"
