@@ -5,11 +5,11 @@ name: CLT release
 # package builds with the Command Line Tools alone (upstream needs Xcode's
 # xcstringstool since 2.2.2026100701; Lakr233/libghostty-spm#81). The
 # XCFramework stays upstream's release asset; nothing is built with Zig here.
-# Runs daily and on demand; does nothing when every upstream tag has its
-# -clt twin.
+# Runs weekly (Monday 06:17 UTC) and on demand; does nothing when every
+# upstream tag has its -clt twin.
 on:
   schedule:
-    - cron: "17 6 * * *"
+    - cron: "17 6 * * 1"
   workflow_dispatch:
     inputs:
       tag:

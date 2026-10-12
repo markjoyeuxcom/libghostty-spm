@@ -16,6 +16,6 @@ asset; nothing is built with Zig here. Pin with
 .package(url: "https://github.com/markjoyeuxcom/libghostty-spm.git", exact: "2.2.2026101003-clt")
 ```
 
-The workflow runs daily and on demand, builds the result with the Command Line
+The workflow runs weekly (Monday 06:17 UTC) and on demand, builds the result with the Command Line
 Tools alone, runs upstream's localisation tests, then pushes the tag. When
 upstream resolves #81 this fork can be deleted and consumers repointed.
