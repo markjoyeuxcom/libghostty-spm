@@ -43,10 +43,11 @@ let package = Package(
             name: "GhosttyTerminal",
             dependencies: ["GhosttyKit", "DisplayLink"],
             path: "Sources/GhosttyTerminal",
+            exclude: ["Resources/Localizable.xcstrings"],
             resources: [
                 .copy("Resources/Ghostty"),
                 .copy("Resources/terminfo"),
-                .process("Resources/Localizable.xcstrings"),
+                .process("Resources/Localizations"),
             ],
             swiftSettings: swiftSettings
         ),
