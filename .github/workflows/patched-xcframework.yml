@@ -1,0 +1,187 @@
+name: Patched XCFramework
+
+# Builds Ghostty ourselves for one upstream package tag, with the upstream
+# wrapper's own patch stack plus the patches under Script/clt/ghostty-patches
+# (fixes merged upstream in Ghostty but not yet in a wrapper release), as a
+# macOS-only GhosttyKit XCFramework. Publishes it as a release on this fork,
+# then republishes the wrapper tag pointing at it, with the string catalog
+# compiled for the Command Line Tools, as <tag>-clt.<label>.
+#
+# Parley is macOS only, so only the macOS slices are built; the wrapper's
+# multi-platform consumer test is not run. The patched Ghostty is the
+# wrapper's Ghostty.ref plus the listed patches, so the wrapper's Swift
+# sources match the C API they were written for.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream package tag to build from (for example 2.2.2026101301)
+        required: true
+        type: string
+      label:
+        description: Prerelease label for the published tag, <tag>-clt.<label> (letters and digits)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patched-xcframework
+  cancel-in-progress: false
+
+jobs:
+  build-target:
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [aarch64-macos, x86_64-macos]
+    steps:
+      - name: Check out the tooling branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check out the upstream tag beside it
+        env:
+          TAG: ${{ inputs.tag }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -eu
+          echo "$LABEL" | grep -Eq '^[A-Za-z0-9]+$' || { echo "label must be letters and digits: $LABEL" >&2; exit 1; }
+          git remote add upstream https://github.com/Lakr233/libghostty-spm.git
+          git fetch --quiet --tags upstream
+          git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null || { echo "no upstream tag $TAG" >&2; exit 1; }
+          git worktree add --detach ../release "refs/tags/$TAG"
+          cp Script/clt/ghostty-patches/*.patch ../release/Patches/ghostty/
+          ls ../release/Patches/ghostty
+      - name: Set up Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+      - name: Clone Ghostty at the wrapper's commit
+        run: |
+          set -eu
+          ref=$(tr -d '[:space:]' < ../release/Ghostty.ref)
+          git clone --quiet https://github.com/ghostty-org/ghostty ../release/References/ghostty-upstream
+          git -C ../release/References/ghostty-upstream checkout --quiet "$ref"
+          echo "ghostty $ref"
+      - name: Build the target with the wrapper's patches plus ours
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          cd ../release
+          ./Script/build-ghostty.sh "$PWD/References/ghostty-upstream" "$TARGET" "$PWD/build/out"
+          grep -q "DisplayLink" References/ghostty-upstream/src/renderer/generic.zig || { echo "the display link patch is not in the built source" >&2; exit 1; }
+          tar -czf "$GITHUB_WORKSPACE/target--macosx--$TARGET.tar.gz" -C ./build/out .
+      - name: Upload the target
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: target--macosx--${{ matrix.target }}
+          path: target--macosx--${{ matrix.target }}.tar.gz
+          compression-level: 0
+          retention-days: 1
+
+  release:
+    needs: build-target
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the tooling branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check out the upstream tag beside it
+        env:
+          TAG: ${{ inputs.tag }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -eu
+          git remote add upstream https://github.com/Lakr233/libghostty-spm.git
+          git fetch --quiet --tags upstream
+          git fetch --quiet --tags origin
+          if git rev-parse -q --verify "refs/tags/$TAG-clt.$LABEL" >/dev/null 2>&1; then echo "$TAG-clt.$LABEL already exists" >&2; exit 1; fi
+          git worktree add --detach ../release "refs/tags/$TAG"
+          mkdir -p ../release/Script
+          cp -R Script/clt ../release/Script/clt
+      - name: Download the targets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: target--*
+          path: tarballs
+          merge-multiple: true
+      - name: Assemble the macOS slice and the XCFramework
+        run: |
+          set -eu
+          cd ../release
+          mkdir -p build/targets/macosx build/dest/macosx/lib build/dest/macosx/include
+          for tarball in "$GITHUB_WORKSPACE"/tarballs/target--macosx--*.tar.gz; do
+            target=$(basename "$tarball" .tar.gz | awk -F'--' '{print $3}')
+            mkdir -p "build/targets/macosx/$target"
+            tar -xzf "$tarball" -C "build/targets/macosx/$target"
+          done
+          libs=(); headers=
+          for dir in build/targets/macosx/*/; do
+            libs+=("$dir/lib/libghostty.a")
+            [ -n "$headers" ] || headers="$dir/include"
+          done
+          cp -R "$headers/." build/dest/macosx/include/
+          lipo -create "${libs[@]}" -output build/dest/macosx/lib/libghostty.a
+          lipo -info build/dest/macosx/lib/libghostty.a
+          ./Script/merge-xcframework.sh "$PWD/build/dest" "$PWD/BinaryTarget/GhosttyKit.xcframework" "$PWD/build/GhosttyKit.xcframework.zip"
+          shasum -a 256 build/GhosttyKit.xcframework.zip
+      - name: Publish the XCFramework on this fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -eu
+          cd ../release
+          ref=$(tr -d '[:space:]' < Ghostty.ref)
+          storage="patched.${ref:0:12}.$LABEL"
+          cp build/GhosttyKit.xcframework.zip GhosttyKit.xcframework.zip
+          gh release create "$storage" GhosttyKit.xcframework.zip \
+            --repo "$GITHUB_REPOSITORY" --target clt \
+            --title "GhosttyKit XCFramework, Ghostty $ref with the $LABEL patches" \
+            --notes "$(printf 'GhosttyKit XCFramework built by this fork.\nGhostty commit: https://github.com/ghostty-org/ghostty/commit/%s\nWrapper tag: %s\nPatches beyond the wrapper'"'"'s own: %s\nSlices: macOS (arm64, x86_64) only.' "$ref" "$TAG" "$(ls Patches/ghostty/00[2-9][0-9]-*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')")"
+          echo "storage=$storage" >> "$GITHUB_ENV"
+      - name: Point the manifests at it and apply the Command Line Tools patch
+        run: |
+          set -eu
+          cd ../release
+          ./Script/build-manifest.sh "$PWD/build/GhosttyKit.xcframework.zip" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$storage/GhosttyKit.xcframework.zip"
+          ./Script/clt/apply.sh
+          grep -n -A3 binaryTarget Package.swift
+      - name: Build with the Command Line Tools alone
+        run: |
+          set -eu
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          if xcrun --find xcstringstool >/dev/null 2>&1; then echo "xcstringstool is reachable; this run proves nothing" >&2; exit 1; fi
+          cd ../release
+          rm -rf BinaryTarget build/targets build/dest build/out References
+          swift --version
+          swift build --build-system swiftbuild
+      - name: Prove the tables are read (tests need Xcode's XCTest)
+        run: |
+          set -eu
+          sudo xcode-select -s /Applications/Xcode.app
+          cd ../release
+          swift test --build-system swiftbuild --filter TerminalLocalizationTests
+      - name: Tag and push
+        env:
+          TAG: ${{ inputs.tag }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -eu
+          cd ../release
+          git add -A
+          git -c user.name="clt-release" -c user.email="clt-release@users.noreply.github.com" \
+            commit -q -m "clt: $TAG with the string catalog compiled and a patched GhosttyKit ($storage)"
+          git tag -a "$TAG-clt.$LABEL" -m "libghostty-spm $TAG, Command Line Tools build, GhosttyKit $storage"
+          git push origin "refs/tags/$TAG-clt.$LABEL"
+          echo "published $TAG-clt.$LABEL at $(git rev-parse --short HEAD)"

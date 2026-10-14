@@ -19,3 +19,20 @@ asset; nothing is built with Zig here. Pin with
 The workflow runs weekly (Monday 06:17 UTC) and on demand, builds the result with the Command Line
 Tools alone, runs upstream's localisation tests, then pushes the tag. When
 upstream resolves #81 this fork can be deleted and consumers repointed.
+
+## Patched XCFrameworks
+
+`.github/workflows/patched-xcframework.yml` (manual) builds Ghostty ourselves
+for one upstream package tag: the wrapper's own `Ghostty.ref` and patch stack
+plus the patches under `Script/clt/ghostty-patches/` (fixes merged upstream in
+Ghostty but not yet in a wrapper release), macOS slices only. It publishes the
+XCFramework as a release `patched.<ghostty>.<label>` on this fork and then
+republishes the wrapper tag pointing at it, with the string catalog compiled,
+as `<tag>-clt.<label>`. Parley pins that tag until a wrapper release carries
+the fix, after which the ordinary `<tag>-clt` twin takes over.
+
+    gh workflow run patched-xcframework.yml --repo markjoyeuxcom/libghostty-spm \
+      -f tag=2.2.2026101301 -f label=displaylink
+
+Patches are rebased onto the wrapper's patch stack when its context differs;
+each patch file says so under its subject.
