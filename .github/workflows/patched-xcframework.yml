@@ -144,6 +144,14 @@ jobs:
           ref=$(tr -d '[:space:]' < Ghostty.ref)
           storage="patched.${ref:0:12}.$LABEL"
           cp build/GhosttyKit.xcframework.zip GhosttyKit.xcframework.zip
+          if gh release view "$storage" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A rerun after a later step failed: the published asset must be
+            # the bytes this run built, or the manifest's checksum would lie.
+            gh release download "$storage" --repo "$GITHUB_REPOSITORY" --pattern GhosttyKit.xcframework.zip --dir published
+            cmp published/GhosttyKit.xcframework.zip GhosttyKit.xcframework.zip || { echo "the published $storage differs from this build; delete the release to rebuild" >&2; exit 1; }
+            echo "storage=$storage" >> "$GITHUB_ENV"
+            exit 0
+          fi
           gh release create "$storage" GhosttyKit.xcframework.zip \
             --repo "$GITHUB_REPOSITORY" --target clt \
             --title "GhosttyKit XCFramework, Ghostty $ref with the $LABEL patches" \
