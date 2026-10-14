@@ -145,10 +145,12 @@ jobs:
           storage="patched.${ref:0:12}.$LABEL"
           cp build/GhosttyKit.xcframework.zip GhosttyKit.xcframework.zip
           if gh release view "$storage" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # A rerun after a later step failed: the published asset must be
-            # the bytes this run built, or the manifest's checksum would lie.
+            # A rerun after a later step failed. A Zig rebuild is not byte
+            # identical, so the manifest must describe the bytes that are
+            # published: use those and discard this run's build.
             gh release download "$storage" --repo "$GITHUB_REPOSITORY" --pattern GhosttyKit.xcframework.zip --dir published
-            cmp published/GhosttyKit.xcframework.zip GhosttyKit.xcframework.zip || { echo "the published $storage differs from this build; delete the release to rebuild" >&2; exit 1; }
+            cp published/GhosttyKit.xcframework.zip build/GhosttyKit.xcframework.zip
+            echo "reusing the published $storage; this run's rebuild is discarded"
             echo "storage=$storage" >> "$GITHUB_ENV"
             exit 0
           fi
