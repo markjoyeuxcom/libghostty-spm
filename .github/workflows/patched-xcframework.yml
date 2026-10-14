@@ -189,6 +189,9 @@ jobs:
         run: |
           set -eu
           cd ../release
+          # The upstream tag's workflow files are not ours to publish, and a
+          # push that creates one is refused without the workflows permission.
+          git rm -r --quiet .github/workflows
           git add -A
           git -c user.name="clt-release" -c user.email="clt-release@users.noreply.github.com" \
             commit -q -m "clt: $TAG with the string catalog compiled and a patched GhosttyKit ($storage)"
