@@ -1,0 +1,99 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 2c78dcf54..ff8b92fd8 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -1224,6 +1224,7 @@ GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t)
+ GHOSTTY_API void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API bool ghostty_surface_mouse_captured(ghostty_surface_t);
+ GHOSTTY_API bool ghostty_surface_bracketed_paste(ghostty_surface_t);
++GHOSTTY_API uint8_t ghostty_surface_text_framed(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API bool ghostty_surface_mouse_button(ghostty_surface_t,
+                                                  ghostty_input_mouse_state_e,
+                                                  ghostty_input_mouse_button_e,
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 7d420b468..5c1fbb396 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -3402,6 +3402,16 @@ pub fn textCallback(self: *Surface, text: []const u8) !void {
+     try self.completeClipboardPaste(text, true);
+ }
+ 
++/// Like textCallback, but only as one bracketed paste: false, with nothing
++/// written, when the running program has bracketed paste off.
++pub fn textFramedCallback(self: *Surface, text: []const u8) !bool {
++    // Crash metadata in case we crash in here
++    crash.sentry.thread_state = self.crashThreadState();
++    defer crash.sentry.thread_state = null;
++
++    return try self.completeClipboardPasteFramed(text, true, true);
++}
++
+ /// Callback for when the surface is fully visible or not, regardless
+ /// of focus state. This is used to pause rendering when the surface
+ /// is not visible, and also re-render when it becomes visible again.
+@@ -6240,12 +6250,26 @@ fn completeClipboardPaste(
+     data: []const u8,
+     allow_unsafe: bool,
+ ) !void {
+-    if (data.len == 0) return;
++    _ = try self.completeClipboardPasteFramed(data, allow_unsafe, false);
++}
++
++/// completeClipboardPaste with one more condition. With require_bracketed,
++/// the paste is made only when the snapshot the encoding uses says the
++/// program has bracketed paste on; otherwise nothing is written and false
++/// is returned. True when the data was queued (or was empty).
++fn completeClipboardPasteFramed(
++    self: *Surface,
++    data: []const u8,
++    allow_unsafe: bool,
++    require_bracketed: bool,
++) !bool {
++    if (data.len == 0) return true;
+ 
+     const encode_opts: input.paste.Options = encode_opts: {
+         self.renderer_state.mutex.lockUncancelable(global.io());
+         defer self.renderer_state.mutex.unlock(global.io());
+         const opts: input.paste.Options = .fromTerminal(&self.io.terminal);
++        if (require_bracketed and !opts.bracketed) return false;
+ 
+         // If we have paste protection enabled, we detect unsafe pastes and return
+         // an error. The error approach allows apprt to attempt to complete the paste
+@@ -6312,6 +6336,8 @@ fn completeClipboardPaste(
+             vec,
+         ), .unlocked);
+     };
++
++    return true;
+ }
+ 
+ /// Send a Kitty clipboard-protocol paste event when mode 5522 is enabled.
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 1a28eb8a2..bbed16618 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -2190,6 +2190,24 @@ pub const CAPI = struct {
+         return surface.core_surface.bracketedPaste();
+     }
+ 
++    /// Send text to the terminal as ghostty_surface_text does, but only as
++    /// one bracketed paste. The mode is read once, by the same snapshot the
++    /// encoding uses, so asking and pasting cannot disagree. Returns 0 when
++    /// the text was queued framed; 1 when the running program has bracketed
++    /// paste off, in which case nothing was written; 2 on an error, after
++    /// which some of the text may have been queued.
++    export fn ghostty_surface_text_framed(
++        surface: *Surface,
++        ptr: [*]const u8,
++        len: usize,
++    ) u8 {
++        const written = surface.core_surface.textFramedCallback(ptr[0..len]) catch |err| {
++            log.err("error in framed text callback err={}", .{err});
++            return 2;
++        };
++        return if (written) 0 else 1;
++    }
++
+     /// Tell the surface that it needs to schedule a render
+     export fn ghostty_surface_mouse_button(
+         surface: *Surface,
