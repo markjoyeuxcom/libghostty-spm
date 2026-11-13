@@ -23,6 +23,11 @@ on:
         description: Prerelease label for the published tag, <tag>-clt.<label> (letters and digits)
         required: true
         type: string
+      publish:
+        description: Publish the XCFramework release and the tag. Off builds everything and keeps the XCFramework as a run artifact only, to try a patch before releasing it.
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -76,6 +81,10 @@ jobs:
           cd ../release
           ./Script/build-ghostty.sh "$PWD/References/ghostty-upstream" "$TARGET" "$PWD/build/out"
           grep -q "DisplayLink" References/ghostty-upstream/src/renderer/generic.zig || { echo "the display link patch is not in the built source" >&2; exit 1; }
+          # The bracketed-paste reading: declared in the header the package
+          # ships and exported by the archive it links.
+          grep -q "ghostty_surface_bracketed_paste" build/out/include/libghostty/ghostty.h || { echo "ghostty_surface_bracketed_paste is not in the shipped header" >&2; exit 1; }
+          nm -g build/out/lib/libghostty.a 2>/dev/null | grep -q "_ghostty_surface_bracketed_paste" || { echo "ghostty_surface_bracketed_paste is not exported by the archive" >&2; exit 1; }
           tar -czf "$GITHUB_WORKSPACE/target--macosx--$TARGET.tar.gz" -C ./build/out .
       - name: Upload the target
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -133,7 +142,22 @@ jobs:
           lipo -info build/dest/macosx/lib/libghostty.a
           ./Script/merge-xcframework.sh "$PWD/build/dest" "$PWD/BinaryTarget/GhosttyKit.xcframework" "$PWD/build/GhosttyKit.xcframework.zip"
           shasum -a 256 build/GhosttyKit.xcframework.zip
+      - name: Bring the XCFramework into the workspace (not published)
+        if: ${{ !inputs.publish }}
+        run: |
+          set -eu
+          cp ../release/build/GhosttyKit.xcframework.zip "$GITHUB_WORKSPACE/GhosttyKit.xcframework.zip"
+          shasum -a 256 "$GITHUB_WORKSPACE/GhosttyKit.xcframework.zip"
+      - name: Keep the XCFramework as a run artifact (not published)
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: GhosttyKit.xcframework
+          path: GhosttyKit.xcframework.zip
+          compression-level: 0
+          retention-days: 3
       - name: Publish the XCFramework on this fork
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -157,9 +181,10 @@ jobs:
           gh release create "$storage" GhosttyKit.xcframework.zip \
             --repo "$GITHUB_REPOSITORY" --target clt \
             --title "GhosttyKit XCFramework, Ghostty $ref with the $LABEL patches" \
-            --notes "$(printf 'GhosttyKit XCFramework built by this fork.\nGhostty commit: https://github.com/ghostty-org/ghostty/commit/%s\nWrapper tag: %s\nPatches beyond the wrapper'"'"'s own: %s\nSlices: macOS (arm64, x86_64) only.' "$ref" "$TAG" "$(ls Patches/ghostty/00[2-9][0-9]-*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')")"
+            --notes "$(printf 'GhosttyKit XCFramework built by this fork.\nGhostty commit: https://github.com/ghostty-org/ghostty/commit/%s\nWrapper tag: %s\nPatches beyond the wrapper'"'"'s own: %s\nSlices: macOS (arm64, x86_64) only.' "$ref" "$TAG" "$(ls Script/clt/ghostty-patches/*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')")"
           echo "storage=$storage" >> "$GITHUB_ENV"
       - name: Point the manifests at it and apply the Command Line Tools patch
+        if: ${{ inputs.publish }}
         run: |
           set -eu
           cd ../release
@@ -168,6 +193,7 @@ jobs:
           ./Script/clt/apply.sh
           grep -n -A3 binaryTarget Package.swift
       - name: Build with the Command Line Tools alone
+        if: ${{ inputs.publish }}
         run: |
           set -eu
           sudo xcode-select -s /Library/Developer/CommandLineTools
@@ -177,12 +203,14 @@ jobs:
           swift --version
           swift build --build-system swiftbuild
       - name: Prove the tables are read (tests need Xcode's XCTest)
+        if: ${{ inputs.publish }}
         run: |
           set -eu
           sudo xcode-select -s /Applications/Xcode.app
           cd ../release
           swift test --build-system swiftbuild --filter TerminalLocalizationTests
       - name: Tag and push
+        if: ${{ inputs.publish }}
         env:
           TAG: ${{ inputs.tag }}
           LABEL: ${{ inputs.label }}
