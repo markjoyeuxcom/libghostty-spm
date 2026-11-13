@@ -85,6 +85,10 @@ jobs:
           # ships and exported by the archive it links.
           grep -q "ghostty_surface_bracketed_paste" build/out/include/libghostty/ghostty.h || { echo "ghostty_surface_bracketed_paste is not in the shipped header" >&2; exit 1; }
           nm -g build/out/lib/libghostty.a 2>/dev/null | grep -q "_ghostty_surface_bracketed_paste" || { echo "ghostty_surface_bracketed_paste is not exported by the archive" >&2; exit 1; }
+          # The paste that is made only framed, decided by the snapshot that
+          # encodes it.
+          grep -q "ghostty_surface_text_framed" build/out/include/libghostty/ghostty.h || { echo "ghostty_surface_text_framed is not in the shipped header" >&2; exit 1; }
+          nm -g build/out/lib/libghostty.a 2>/dev/null | grep -q "_ghostty_surface_text_framed" || { echo "ghostty_surface_text_framed is not exported by the archive" >&2; exit 1; }
           tar -czf "$GITHUB_WORKSPACE/target--macosx--$TARGET.tar.gz" -C ./build/out .
       - name: Upload the target
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
