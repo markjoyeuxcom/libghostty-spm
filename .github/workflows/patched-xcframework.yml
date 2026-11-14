@@ -81,6 +81,10 @@ jobs:
           cd ../release
           ./Script/build-ghostty.sh "$PWD/References/ghostty-upstream" "$TARGET" "$PWD/build/out"
           grep -q "DisplayLink" References/ghostty-upstream/src/renderer/generic.zig || { echo "the display link patch is not in the built source" >&2; exit 1; }
+          # Freeing a surface keeps the app and renderer mailboxes drained
+          # while it joins the threads that push into them.
+          grep -q "teardownDrain" References/ghostty-upstream/src/Surface.zig || { echo "the teardown drain patch is not in the built source" >&2; exit 1; }
+          [ -f References/ghostty-upstream/src/datastruct/queue_drain.zig ] || { echo "the teardown drain patch's queue_drain.zig is not in the built source" >&2; exit 1; }
           # The bracketed-paste reading: declared in the header the package
           # ships and exported by the archive it links.
           grep -q "ghostty_surface_bracketed_paste" build/out/include/libghostty/ghostty.h || { echo "ghostty_surface_bracketed_paste is not in the shipped header" >&2; exit 1; }
