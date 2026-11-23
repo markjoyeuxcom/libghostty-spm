@@ -1,0 +1,76 @@
+A wakeup Ghostty raises on the main thread is handled on the next main-queue
+turn, never inside the C call that raised it; plus its test.
+
+This is git diff 782f5f17 5801a78 (the hand tag 2.2.2026101301-clt.wakeupasync)
+with one line changed in the test: "#expect(Thread.isMainThread)", which
+Xcode's Swift refuses in an async context, is
+"dispatchPrecondition(condition: .onQueue(.main))" here.
+
+diff --git a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift b/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
+index 8eb2515..90ab697 100644
+--- a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
++++ b/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
+@@ -17,12 +17,15 @@ private enum TerminalCallbacks {
+         guard let userdata else { return }
+         let controller = Unmanaged<TerminalController>.fromOpaque(userdata)
+             .takeUnretainedValue()
+-        // A wakeup on the main thread comes from inside a tick or a C call
+-        // the main thread made; it ticks inline, as it always has.
+-        if Thread.isMainThread {
+-            MainActor.assumeIsolated { controller.handleWakeup() }
+-            return
+-        }
++        // Never tick inline, on any thread. A wakeup on the main thread comes
++        // from inside a C call the main thread made: a tick, a key, a free,
++        // or a display-link frame's synchronous draw, which holds the
++        // renderer's draw mutex. A tick there runs Surface.handleMessage,
++        // whose child-exited path takes the terminal state mutex, while the
++        // renderer thread holds the state mutex and waits for the draw
++        // mutex: the main thread then waits for ever. Ghostty's own macOS
++        // app schedules every wakeup's tick on the main queue for the same
++        // reason; the next turn runs it once the C call has returned.
+         guard controller.wakeupGate.claim() else { return }
+         DispatchQueue.main.async {
+             controller.wakeupGate.release()
+diff --git a/Tests/GhosttyKitTest/Surface/TerminalLifecycleTests.swift b/Tests/GhosttyKitTest/Surface/TerminalLifecycleTests.swift
+index 23c5c75..2f255de 100644
+--- a/Tests/GhosttyKitTest/Surface/TerminalLifecycleTests.swift
++++ b/Tests/GhosttyKitTest/Surface/TerminalLifecycleTests.swift
+@@ -216,6 +216,37 @@ struct TerminalLifecycleTests {
+         #expect(secondWakeups == 0)
+     }
+ 
++    @Test
++    func `a main-thread wakeup ticks on the next main-queue turn, never inside the call`() async {
++        let controller = TerminalController()
++        let token = WakeupToken()
++        var wakeups = 0
++        controller.addWakeupObserver(
++            ObjectIdentifier(token),
++            shouldProcess: { true },
++            onWakeup: { wakeups += 1 },
++        )
++        let userdata = Unmanaged.passUnretained(controller).toOpaque()
++
++        // As Ghostty calls it from inside a C call the main thread made (a
++        // synchronous draw holding the renderer's draw mutex): twice, since
++        // one call can push more than one message.
++        dispatchPrecondition(condition: .onQueue(.main))
++        terminalControllerWakeupCallback(userdata: userdata)
++        terminalControllerWakeupCallback(userdata: userdata)
++        #expect(wakeups == 0, "a main-thread wakeup ticked before the C call returned")
++
++        // The main queue is FIFO: once this turn has run, the scheduled tick has.
++        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
++        #expect(wakeups == 1, "the wakeups were not ticked once on the next main-queue turn")
++
++        // The gate is open again, so a later wakeup schedules its own tick.
++        terminalControllerWakeupCallback(userdata: userdata)
++        #expect(wakeups == 1)
++        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
++        #expect(wakeups == 2)
++    }
++
+     @Test
+     func `application active state controls immediate ticks`() async {
+         let coordinator = TerminalSurfaceCoordinator()

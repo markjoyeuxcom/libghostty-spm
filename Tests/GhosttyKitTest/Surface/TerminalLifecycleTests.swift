@@ -217,6 +217,37 @@ struct TerminalLifecycleTests {
     }
 
     @Test
+    func `a main-thread wakeup ticks on the next main-queue turn, never inside the call`() async {
+        let controller = TerminalController()
+        let token = WakeupToken()
+        var wakeups = 0
+        controller.addWakeupObserver(
+            ObjectIdentifier(token),
+            shouldProcess: { true },
+            onWakeup: { wakeups += 1 },
+        )
+        let userdata = Unmanaged.passUnretained(controller).toOpaque()
+
+        // As Ghostty calls it from inside a C call the main thread made (a
+        // synchronous draw holding the renderer's draw mutex): twice, since
+        // one call can push more than one message.
+        dispatchPrecondition(condition: .onQueue(.main))
+        terminalControllerWakeupCallback(userdata: userdata)
+        terminalControllerWakeupCallback(userdata: userdata)
+        #expect(wakeups == 0, "a main-thread wakeup ticked before the C call returned")
+
+        // The main queue is FIFO: once this turn has run, the scheduled tick has.
+        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
+        #expect(wakeups == 1, "the wakeups were not ticked once on the next main-queue turn")
+
+        // The gate is open again, so a later wakeup schedules its own tick.
+        terminalControllerWakeupCallback(userdata: userdata)
+        #expect(wakeups == 1)
+        await withCheckedContinuation { done in DispatchQueue.main.async { done.resume() } }
+        #expect(wakeups == 2)
+    }
+
+    @Test
     func `application active state controls immediate ticks`() async {
         let coordinator = TerminalSurfaceCoordinator()
         var renders = 0
