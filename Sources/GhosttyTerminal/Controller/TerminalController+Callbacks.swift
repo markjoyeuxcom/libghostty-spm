@@ -17,12 +17,15 @@ private enum TerminalCallbacks {
         guard let userdata else { return }
         let controller = Unmanaged<TerminalController>.fromOpaque(userdata)
             .takeUnretainedValue()
-        // A wakeup on the main thread comes from inside a tick or a C call
-        // the main thread made; it ticks inline, as it always has.
-        if Thread.isMainThread {
-            MainActor.assumeIsolated { controller.handleWakeup() }
-            return
-        }
+        // Never tick inline, on any thread. A wakeup on the main thread comes
+        // from inside a C call the main thread made: a tick, a key, a free,
+        // or a display-link frame's synchronous draw, which holds the
+        // renderer's draw mutex. A tick there runs Surface.handleMessage,
+        // whose child-exited path takes the terminal state mutex, while the
+        // renderer thread holds the state mutex and waits for the draw
+        // mutex: the main thread then waits for ever. Ghostty's own macOS
+        // app schedules every wakeup's tick on the main queue for the same
+        // reason; the next turn runs it once the C call has returned.
         guard controller.wakeupGate.claim() else { return }
         DispatchQueue.main.async {
             controller.wakeupGate.release()
