@@ -1,0 +1,52 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 3ad25d565..2c78dcf54 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -1223,6 +1223,7 @@ GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
+ GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API bool ghostty_surface_mouse_captured(ghostty_surface_t);
++GHOSTTY_API bool ghostty_surface_bracketed_paste(ghostty_surface_t);
+ GHOSTTY_API bool ghostty_surface_mouse_button(ghostty_surface_t,
+                                                  ghostty_input_mouse_state_e,
+                                                  ghostty_input_mouse_button_e,
+diff --git a/src/Surface.zig b/src/Surface.zig
+index bebed51ea..7d420b468 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -3883,6 +3883,15 @@ pub fn mouseCaptured(self: *Surface) bool {
+     return self.io.terminal.flags.mouse_event != .none;
+ }
+ 
++/// Returns true if the running program has enabled bracketed paste. This
++/// is the same reading completeClipboardPaste makes before it encodes.
++pub fn bracketedPaste(self: *Surface) bool {
++    self.renderer_state.mutex.lockUncancelable(global.io());
++    defer self.renderer_state.mutex.unlock(global.io());
++    const opts: input.paste.Options = .fromTerminal(&self.io.terminal);
++    return opts.bracketed;
++}
++
+ /// Called for mouse button press/release events. This will return true
+ /// if the mouse event was consumed in some way (i.e. the program is capturing
+ /// mouse events). If the event was not consumed, then false is returned.
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 6e7c06660..1a28eb8a2 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -2181,6 +2181,15 @@ pub const CAPI = struct {
+         return surface.core_surface.mouseCaptured();
+     }
+ 
++    /// Returns true if the program running in the surface has enabled
++    /// bracketed paste (mode 2004), read the way a paste reads it. Without
++    /// it, text given to ghostty_surface_text reaches the program with
++    /// every newline as a carriage return, which a shell or a prompt takes
++    /// as Enter, so a host can ask before it sends several lines.
++    export fn ghostty_surface_bracketed_paste(surface: *Surface) bool {
++        return surface.core_surface.bracketedPaste();
++    }
++
+     /// Tell the surface that it needs to schedule a render
+     export fn ghostty_surface_mouse_button(
+         surface: *Surface,
