@@ -1,3 +1,11 @@
+A wakeup Ghostty raises on the main thread is handled on the next main-queue
+turn, never inside the C call that raised it; plus its test.
+
+This is git diff 782f5f17 5801a78 (the hand tag 2.2.2026101301-clt.wakeupasync)
+with one line changed in the test: "#expect(Thread.isMainThread)", which
+Xcode's Swift refuses in an async context, is
+"dispatchPrecondition(condition: .onQueue(.main))" here.
+
 diff --git a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift b/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
 index 8eb2515..90ab697 100644
 --- a/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift
@@ -47,7 +55,7 @@ index 23c5c75..2f255de 100644
 +        // As Ghostty calls it from inside a C call the main thread made (a
 +        // synchronous draw holding the renderer's draw mutex): twice, since
 +        // one call can push more than one message.
-+        #expect(Thread.isMainThread)
++        dispatchPrecondition(condition: .onQueue(.main))
 +        terminalControllerWakeupCallback(userdata: userdata)
 +        terminalControllerWakeupCallback(userdata: userdata)
 +        #expect(wakeups == 0, "a main-thread wakeup ticked before the C call returned")
