@@ -7,6 +7,13 @@ name: Patched XCFramework
 # then republishes the wrapper tag pointing at it, with the string catalog
 # compiled for the Command Line Tools, as <tag>-clt.<label>.
 #
+# The wrapper's own Swift sources can carry fixes too: each patch under
+# Script/clt/wrapper-patches, in name order, is applied with git apply
+# --index to the upstream tag's checkout before the release commit, so it is
+# part of the published tag. A patch that no longer applies fails the run
+# before anything is published. They change Swift only, so the Ghostty
+# build does not see them.
+#
 # Parley is macOS only, so only the macOS slices are built; the wrapper's
 # multi-platform consumer test is not run. The patched Ghostty is the
 # wrapper's Ghostty.ref plus the listed patches, so the wrapper's Swift
@@ -124,6 +131,18 @@ jobs:
           git worktree add --detach ../release "refs/tags/$TAG"
           mkdir -p ../release/Script
           cp -R Script/clt ../release/Script/clt
+      - name: Apply the wrapper's own patches
+        run: |
+          set -eu
+          for patch in Script/clt/wrapper-patches/*.patch; do
+            [ -e "$patch" ] || continue
+            echo "applying $patch"
+            git -C ../release apply --index "$PWD/$patch"
+          done
+          # A wakeup Ghostty raises on the main thread is handled on the next
+          # main-queue turn, never inside the C call that raised it.
+          grep -q "Never tick inline" ../release/Sources/GhosttyTerminal/Controller/TerminalController+Callbacks.swift || { echo "the wakeup patch is not in the wrapper's sources" >&2; exit 1; }
+          git -C ../release diff --cached --stat
       - name: Download the targets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -189,7 +208,7 @@ jobs:
           gh release create "$storage" GhosttyKit.xcframework.zip \
             --repo "$GITHUB_REPOSITORY" --target clt \
             --title "GhosttyKit XCFramework, Ghostty $ref with the $LABEL patches" \
-            --notes "$(printf 'GhosttyKit XCFramework built by this fork.\nGhostty commit: https://github.com/ghostty-org/ghostty/commit/%s\nWrapper tag: %s\nPatches beyond the wrapper'"'"'s own: %s\nSlices: macOS (arm64, x86_64) only.' "$ref" "$TAG" "$(ls Script/clt/ghostty-patches/*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')")"
+            --notes "$(printf 'GhosttyKit XCFramework built by this fork.\nGhostty commit: https://github.com/ghostty-org/ghostty/commit/%s\nWrapper tag: %s\nPatches beyond the wrapper'"'"'s own: %s\nWrapper Swift patches: %s\nSlices: macOS (arm64, x86_64) only.' "$ref" "$TAG" "$(ls Script/clt/ghostty-patches/*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')" "$(ls Script/clt/wrapper-patches/*.patch 2>/dev/null | xargs -n1 basename | tr '\n' ' ')")"
           echo "storage=$storage" >> "$GITHUB_ENV"
       - name: Point the manifests at it and apply the Command Line Tools patch
         if: ${{ inputs.publish }}
@@ -210,13 +229,14 @@ jobs:
           rm -rf BinaryTarget build/targets build/dest build/out References
           swift --version
           swift build --build-system swiftbuild
-      - name: Prove the tables are read (tests need Xcode's XCTest)
+      - name: Prove the tables are read and the wrapper patches hold (tests need Xcode's XCTest)
         if: ${{ inputs.publish }}
         run: |
           set -eu
           sudo xcode-select -s /Applications/Xcode.app
           cd ../release
           swift test --build-system swiftbuild --filter TerminalLocalizationTests
+          swift test --build-system swiftbuild --filter TerminalLifecycleTests
       - name: Tag and push
         if: ${{ inputs.publish }}
         env:
